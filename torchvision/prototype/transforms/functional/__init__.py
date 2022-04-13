@@ -82,3 +82,25 @@ from ._type_conversion import (
     to_image_tensor,
     to_image_pil,
 )
+
+
+class ImageTensorFunc:
+    horizontal_flip = horizontal_flip_image_tensor
+    center_crop = center_crop_image_tensor
+    pad = pad_image_tensor
+
+
+
+class ImagePILFunc:
+    horizontal_flip = horizontal_flip_image_pil
+    center_crop = center_crop_image_pil
+    pad = pad_image_pil
+
+
+class SegmentationMaskFunc:
+    horizontal_flip = horizontal_flip_segmentation_mask
+
+
+class BoundingBoxFunc:
+    horizontal_flip = horizontal_flip_bounding_box
+    pad = pad_bounding_box

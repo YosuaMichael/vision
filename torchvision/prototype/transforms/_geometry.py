@@ -13,26 +13,14 @@ from torchvision.transforms.transforms import _setup_size, _interpolation_modes_
 from typing_extensions import Literal
 
 from ._transform import _RandomApplyTransform
-from ._utils import query_image, get_image_dimensions, has_any, is_simple_tensor
+from ._utils import query_image, get_image_dimensions, has_any, is_simple_tensor, get_class_func, noops, output_new_like
 
 
 class RandomHorizontalFlip(_RandomApplyTransform):
     def _transform(self, input: Any, params: Dict[str, Any]) -> Any:
-        if isinstance(input, features.Image):
-            output = F.horizontal_flip_image_tensor(input)
-            return features.Image.new_like(input, output)
-        elif isinstance(input, features.SegmentationMask):
-            output = F.horizontal_flip_segmentation_mask(input)
-            return features.SegmentationMask.new_like(input, output)
-        elif isinstance(input, features.BoundingBox):
-            output = F.horizontal_flip_bounding_box(input, format=input.format, image_size=input.image_size)
-            return features.BoundingBox.new_like(input, output)
-        elif isinstance(input, PIL.Image.Image):
-            return F.horizontal_flip_image_pil(input)
-        elif is_simple_tensor(input):
-            return F.horizontal_flip_image_tensor(input)
-        else:
-            return input
+        fn = get_class_func(input).getattr("horizontal_flip", noops)
+        output = fn(input)
+        return output_new_like(input, output)
 
 
 class RandomVerticalFlip(_RandomApplyTransform):
