@@ -6,6 +6,8 @@ from torchvision.prototype import features
 from torchvision.prototype.utils._internal import query_recursively
 
 from .functional._meta import get_dimensions_image_tensor, get_dimensions_image_pil
+from torchvision.prototype.transforms.functional import ImageTensorFunc, ImagePILFunc, SegmentationMaskFunc, BoundingBoxFunc
+from torchvision.prototype import features
 
 
 def query_image(sample: Any) -> Union[PIL.Image.Image, torch.Tensor, features.Image]:
@@ -50,3 +52,33 @@ def has_all(sample: Any, *types: Type) -> bool:
 
 def is_simple_tensor(input: Any) -> bool:
     return isinstance(input, torch.Tensor) and not isinstance(input, features._Feature)
+
+
+def get_class_func(input):
+    if isinstance(input, features.Image):
+        return ImageTensorFunc
+    elif isinstance(input, features.SegmentationMask):
+        return SegmentationMaskFunc
+    elif isinstance(input, features.BoundingBox):
+        return BoundingBoxFunc
+    elif is_simple_tensor(input):
+        return ImageTensorFunc
+    elif isinstance(input, PIL.Image.Image):
+        return ImagePILFunc
+    else:
+        raise TypeError("The input type is not valid!")
+
+
+def noops(x):
+    return x
+
+
+def output_new_like(input, output):
+    if isinstance(input, features.Image):
+        return features.Image.new_like(input, output)
+    elif isinstance(input, features.BoundingBox):
+        return features.BoundingBox.new_like(input, output)
+    elif isinstance(input, features.SegmentationMask):
+        return features.SegmentationMask.new_like(input, output)
+    else:
+        return output
