@@ -52,23 +52,12 @@ def evaluate(model, criterion, data_loader, device):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Test:"
     num_processed_samples = 0
-    # Build aggregated outputs and targets
-    agg_outputs = {}
-    agg_targets = {}
     with torch.inference_mode():
-        for video, video_idx, target in metric_logger.log_every(data_loader, 100, header):
+        for video, target in metric_logger.log_every(data_loader, 100, header):
             video = video.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
             output = model(video)
             loss = criterion(output, target)
-            
-            for b in video.size(0):
-                if video_idx[b] not in agg_outputs:
-                    agg_outputs[video_idx[b]] = output[b]
-                    agg_targets[video_idx[b]] = target[b]
-                else:
-                    agg_outptus[video_idx[b]] += output[b]
-                    agg_targets[video_idx[b]] += target[b]
 
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
             # FIXME need to take into account that the datasets
@@ -106,16 +95,6 @@ def evaluate(model, criterion, data_loader, device):
             top1=metric_logger.acc1, top5=metric_logger.acc5
         )
     )
-    # Patch
-    all_video_idxs = [key for key in video_idx.keys()]
-    agg_output_tensor = torch.stack([agg_outputs[idx] for idx in all_video_idxs], dim=0)
-    agg_target_tensor = torch.stack([agg_targets[idx] for idx in all_video_idxs], dim=0)
-    agg_acc1, agg_acc5 = utils.accuracy(agg_output_tensor, agg_target_tensor, topk=(1, 5))
-    print(
-        " * Video Acc@1 {acc1:.3f} Video Acc@5 {acc5:.3f}".format(
-            acc1=agg_acc1, acc5=agg_acc5
-        )
-    )
     return metric_logger.acc1.global_avg
 
 
@@ -130,7 +109,7 @@ def _get_cache_path(filepath):
 
 def collate_fn(batch):
     # remove audio from the batch
-    # batch = [(d[0], d[2]) for d in batch]
+    batch = [(d[0], d[2]) for d in batch]
     return default_collate(batch)
 
 
@@ -173,7 +152,7 @@ def main(args):
             split="train",
             step_between_clips=1,
             transform=transform_train,
-            frame_rate=args.frame_rate,
+            frame_rate=15,
             extensions=(
                 "avi",
                 "mp4",
@@ -210,7 +189,7 @@ def main(args):
             split="val",
             step_between_clips=1,
             transform=transform_test,
-            frame_rate=args.frame_rate,
+            frame_rate=15,
             extensions=(
                 "avi",
                 "mp4",
@@ -345,7 +324,6 @@ def parse_args():
     parser.add_argument("--model", default="r2plus1d_18", type=str, help="model name")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument("--clip-len", default=16, type=int, metavar="N", help="number of frames per clip")
-    parser.add_argument("--frame-rate", default=15, type=int, metavar="N", help="the frame rate")
     parser.add_argument(
         "--clips-per-video", default=5, type=int, metavar="N", help="maximum number of clips per video to consider"
     )

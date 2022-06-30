@@ -245,7 +245,7 @@ class Kinetics(VisionDataset):
         if self.transform is not None:
             video = self.transform(video)
 
-        return video, audio, label
+        return video, video_idx, label
 
 
 class Kinetics400(Kinetics):
