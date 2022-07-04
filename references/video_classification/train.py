@@ -2,6 +2,7 @@ import datetime
 import os
 import time
 import warnings
+import json
 
 import presets
 import datasets
@@ -48,7 +49,7 @@ def train_one_epoch(model, criterion, optimizer, lr_scheduler, data_loader, devi
         lr_scheduler.step()
 
 
-def evaluate(model, criterion, data_loader, device):
+def evaluate(model, criterion, data_loader, device, args):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Test:"
@@ -58,18 +59,23 @@ def evaluate(model, criterion, data_loader, device):
     num_classes = len(data_loader.dataset.classes)
     agg_outputs = torch.zeros((num_videos, num_classes), dtype=torch.float32, device=device)
     agg_targets = torch.zeros((num_videos), dtype=torch.int32, device=device)
+    tsv_out = open(os.path.join(args.output_dir, f"{args.model}_val.jsonl"), "w")
     with torch.inference_mode():
-        for video, video_idx, target in metric_logger.log_every(data_loader, 100, header):
+        for video, video_idx, clip_idx, target in metric_logger.log_every(data_loader, 100, header):
             video = video.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
             output = model(video)
             loss = criterion(output, target)
+            
            
             # Iterate over batch to correctly aggregate according to video_idx
             for b in range(video.size(0)):
                 idx = video_idx[b].item()
                 agg_outputs[idx] += output[b].detach()
                 agg_targets[idx] = target[b].detach().item()
+
+
+
 
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
             # FIXME need to take into account that the datasets
@@ -79,6 +85,26 @@ def evaluate(model, criterion, data_loader, device):
             metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
             metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
             num_processed_samples += batch_size
+
+            # Gather from all gpus and write the output
+            video_idx = video_idx.to(device, non_blocking=True)
+            clip_idx = clip_idx.to(device, non_blocking=True)
+            output = output.to(device, non_blocking=True)
+            dvideo_idx, dclip_idx, doutput, dtarget = utils.all_gather([video_idx, clip_idx, output, target])
+            for b in range(dvideo_idx.size(0)):
+                idx = dvideo_idx[b].item()
+                cur_clip_idx = dclip_idx[b].item()
+                video_path = data_loader.dataset.video_clips.video_paths[idx]
+                pred5 = doutput[b].topk(5)[1].tolist()
+                true_label = dtarget[b].detach().item()
+                raw_output = doutput[b].tolist()
+                data = {
+                    "video_id": idx, "clip_id": cur_clip_idx, "video_path": video_path,
+                    "label": true_label, "top5_pred": pred5, "raw_output": raw_output,
+                }
+                tsv_out.write(json.dumps(data) + "\n")
+                tsv_out.flush()
+    tsv_out.close()
     # gather the stats from all processes
     num_processed_samples = utils.reduce_across_processes(num_processed_samples)
     if isinstance(data_loader.sampler, DistributedSampler):
@@ -130,7 +156,7 @@ def _get_cache_path(filepath):
 
 def collate_fn(batch):
     # remove audio from the batch
-    # batch = [(d[0], d[2]) for d in batch]
+    batch = [(d[0], d[1], d[2], d[4]) for d in batch]
     return default_collate(batch)
 
 
@@ -217,7 +243,7 @@ def main(args):
                 "mp4",
             ),
             output_format="TCHW",
-            num_workers=10,
+            num_workers=15,
         )
         if args.cache_dataset:
             print(f"Saving dataset_test to {cache_path}")
@@ -308,7 +334,7 @@ def main(args):
         # We disable the cudnn benchmarking because it can noticeably affect the accuracy
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
-        evaluate(model, criterion, data_loader_test, device=device)
+        evaluate(model, criterion, data_loader_test, device=device, args=args)
         return
 
     print("Start training")
@@ -317,7 +343,7 @@ def main(args):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         train_one_epoch(model, criterion, optimizer, lr_scheduler, data_loader, device, epoch, args.print_freq, scaler)
-        evaluate(model, criterion, data_loader_test, device=device)
+        evaluate(model, criterion, data_loader_test, device=device, args=args)
         if args.output_dir:
             checkpoint = {
                 "model": model_without_ddp.state_dict(),

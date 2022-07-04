@@ -262,3 +262,28 @@ def reduce_across_processes(val, op=torch.distributed.ReduceOp.SUM):
     dist.barrier()
     dist.all_reduce(t, op=op)
     return t
+
+
+def all_gather(tensors):
+    """
+    All gathers the provided tensors from all processes across machines.
+    Args:
+        tensors (list): tensors to perform all gather across all processes in
+        all machines.
+    """
+    if not is_dist_avail_and_initialized():
+        # nothing to sync, but we still convert to tensor for consistency with the distributed case.
+        return tensors
+
+    gather_list = []
+    output_tensor = []
+    world_size = dist.get_world_size()
+    for tensor in tensors:
+        tensor_placeholder = [
+            torch.ones_like(tensor) for _ in range(world_size)
+        ]
+        dist.all_gather(tensor_placeholder, tensor, async_op=False)
+        gather_list.append(tensor_placeholder)
+    for gathered_tensor in gather_list:
+        output_tensor.append(torch.cat(gathered_tensor, dim=0))
+    return output_tensor

@@ -1,5 +1,6 @@
 import torchvision
-
+from typing import Tuple
+from torch import Tensor
 
 class CustomKinetics(torchvision.datasets.Kinetics):
     def __getitem__(self, idx: int) -> Tuple[Tensor, Tensor, int]:
@@ -8,6 +9,5 @@ class CustomKinetics(torchvision.datasets.Kinetics):
 
         if self.transform is not None:
             video = self.transform(video)
-        
-        # We want to return video_idx to get video level accuracy
-        return video, video_idx, audio, label
+
+        return video, video_idx, idx, audio, label
