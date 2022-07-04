@@ -15,6 +15,8 @@ from torch import nn
 from torch.utils.data.dataloader import default_collate
 from torchvision.datasets.samplers import DistributedSampler, UniformClipSampler, RandomClipSampler
 
+import torchmultimodal.models.omnivore as omnivore
+
 
 def train_one_epoch(model, criterion, optimizer, lr_scheduler, data_loader, device, epoch, print_freq, scaler=None):
     model.train()
@@ -64,14 +66,15 @@ def evaluate(model, criterion, data_loader, device, args):
         for video, video_idx, clip_idx, target in metric_logger.log_every(data_loader, 100, header):
             video = video.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
-            output = model(video)
+            output = model(video, "video")
             loss = criterion(output, target)
             
            
             # Iterate over batch to correctly aggregate according to video_idx
+            soft_output = torch.nn.Softmax(dim=1)(output)
             for b in range(video.size(0)):
                 idx = video_idx[b].item()
-                agg_outputs[idx] += output[b].detach()
+                agg_outputs[idx] += soft_output[b].detach()
                 agg_targets[idx] = target[b].detach().item()
 
 
@@ -145,10 +148,11 @@ def evaluate(model, criterion, data_loader, device, args):
     return metric_logger.acc1.global_avg
 
 
-def _get_cache_path(filepath):
+def _get_cache_path(filepath, args):
     import hashlib
 
-    h = hashlib.sha1(filepath.encode()).hexdigest()
+    value = f"{filepath}-{args.clip_len}-{args.kinetics_version}-{args.frame_rate}-{args.step_between_clips}"
+    h = hashlib.sha1(value.encode()).hexdigest()
     cache_path = os.path.join("~", ".torch", "vision", "datasets", "kinetics", h[:10] + ".pt")
     cache_path = os.path.expanduser(cache_path)
     return cache_path
@@ -183,7 +187,7 @@ def main(args):
     print("Loading training data")
     """
     st = time.time()
-    cache_path = _get_cache_path(traindir)
+    cache_path = _get_cache_path(traindir, args)
     transform_train = presets.VideoClassificationPresetTrain(crop_size=(112, 112), resize_size=(128, 171))
 
     if args.cache_dataset and os.path.exists(cache_path):
@@ -198,7 +202,7 @@ def main(args):
             frames_per_clip=args.clip_len,
             num_classes=args.kinetics_version,
             split="train",
-            step_between_clips=1,
+            step_between_clips=args.step_between_clips,
             transform=transform_train,
             frame_rate=args.frame_rate,
             extensions=(
@@ -215,13 +219,13 @@ def main(args):
     print("Took", time.time() - st)
     """
     print("Loading validation data")
-    cache_path = _get_cache_path(valdir)
+    cache_path = _get_cache_path(valdir, args)
 
     if args.weights and args.test_only:
         weights = torchvision.models.get_weight(args.weights)
         transform_test = weights.transforms()
     else:
-        transform_test = presets.VideoClassificationPresetEval(crop_size=(112, 112), resize_size=(128, 171))
+        transform_test = presets.VideoClassificationPresetEval(crop_size=args.val_crop_size, resize_size=args.val_resize_size)
 
     if args.cache_dataset and os.path.exists(cache_path):
         print(f"Loading dataset_test from {cache_path}")
@@ -235,7 +239,7 @@ def main(args):
             frames_per_clip=args.clip_len,
             num_classes=args.kinetics_version,
             split="val",
-            step_between_clips=1,
+            step_between_clips=args.step_between_clips,
             transform=transform_test,
             frame_rate=args.frame_rate,
             extensions=(
@@ -276,7 +280,8 @@ def main(args):
     )
 
     print("Creating model")
-    model = torchvision.models.video.__dict__[args.model](weights=args.weights)
+    # model = torchvision.models.video.__dict__[args.model](weights=args.weights)
+    model = omnivore.omnivore_swin_t(pretrained=True)
     model.to(device)
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -435,6 +440,10 @@ def get_args_parser(add_help=True):
 
     # Mixed precision training parameters
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
+
+    parser.add_argument("--step-between-clips", default=1, type=int, help="Number of frames between consecutive video clips")
+    parser.add_argument("--val-crop-size", default=112, type=int)
+    parser.add_argument("--val-resize-size", default=128, type=int)
 
     return parser
 
