@@ -61,7 +61,7 @@ def evaluate(model, criterion, data_loader, device, args):
     agg_targets = torch.zeros((num_videos), dtype=torch.int32, device=device)
     tsv_out = open(os.path.join(args.output_dir, f"{args.model}_val.jsonl"), "w")
     with torch.inference_mode():
-        for video, video_idx, clip_idx, target in metric_logger.log_every(data_loader, 100, header):
+        for video, video_idx, clip_idx, start_pts, end_pts, target in metric_logger.log_every(data_loader, 100, header):
             video = video.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
             output = model(video)
@@ -90,7 +90,9 @@ def evaluate(model, criterion, data_loader, device, args):
             video_idx = video_idx.to(device, non_blocking=True)
             clip_idx = clip_idx.to(device, non_blocking=True)
             output = output.to(device, non_blocking=True)
-            dvideo_idx, dclip_idx, doutput, dtarget = utils.all_gather([video_idx, clip_idx, output, target])
+            start_pts = start_pts.to(device, non_blocking=True)
+            end_pts = end_pts.to(device, non_blocking=True)
+            dvideo_idx, dclip_idx, doutput, dtarget, dstart_pts, dend_pts = utils.all_gather([video_idx, clip_idx, output, target, start_pts, end_pts])
             for b in range(dvideo_idx.size(0)):
                 idx = dvideo_idx[b].item()
                 cur_clip_idx = dclip_idx[b].item()
@@ -98,9 +100,12 @@ def evaluate(model, criterion, data_loader, device, args):
                 pred5 = doutput[b].topk(5)[1].tolist()
                 true_label = dtarget[b].detach().item()
                 raw_output = doutput[b].tolist()
+                cur_start_pts = dstart_pts[b].item()
+                cur_end_pts = dend_pts[b].item()
                 data = {
                     "video_id": idx, "clip_id": cur_clip_idx, "video_path": video_path,
                     "label": true_label, "top5_pred": pred5, "raw_output": raw_output,
+                    "start_pts": cur_start_pts, "end_pts": cur_end_pts,
                 }
                 tsv_out.write(json.dumps(data) + "\n")
                 tsv_out.flush()
@@ -147,16 +152,17 @@ def evaluate(model, criterion, data_loader, device, args):
 
 def _get_cache_path(filepath):
     import hashlib
-
-    h = hashlib.sha1(filepath.encode()).hexdigest()
-    cache_path = os.path.join("~", ".torch", "vision", "datasets", "kinetics", h[:10] + ".pt")
+    
+    value = f"{filepath}-{args.clip_len}-{args.kinetics_version}-{args.frame_rate}-{args.step_between_clips}"
+    h = hashlib.sha1(value.encode()).hexdigest()
+    cache_path = os.path.join("~", ".torch", "vision", "datasets", "kinetics_withtime", h[:10] + ".pt")
     cache_path = os.path.expanduser(cache_path)
     return cache_path
 
 
 def collate_fn(batch):
     # remove audio from the batch
-    batch = [(d[0], d[1], d[2], d[4]) for d in batch]
+    # batch = [(d[0], d[1], d[2], d[4]) for d in batch]
     return default_collate(batch)
 
 
@@ -198,7 +204,7 @@ def main(args):
             frames_per_clip=args.clip_len,
             num_classes=args.kinetics_version,
             split="train",
-            step_between_clips=1,
+            step_between_clips=args.step_between_clips,
             transform=transform_train,
             frame_rate=args.frame_rate,
             extensions=(
@@ -235,7 +241,7 @@ def main(args):
             frames_per_clip=args.clip_len,
             num_classes=args.kinetics_version,
             split="val",
-            step_between_clips=1,
+            step_between_clips=args.step_between_clips,
             transform=transform_test,
             frame_rate=args.frame_rate,
             extensions=(
@@ -243,7 +249,7 @@ def main(args):
                 "mp4",
             ),
             output_format="TCHW",
-            num_workers=15,
+            num_workers=30,
         )
         if args.cache_dataset:
             print(f"Saving dataset_test to {cache_path}")
@@ -435,6 +441,8 @@ def get_args_parser(add_help=True):
 
     # Mixed precision training parameters
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
+
+    parser.add_argument("--step-between-clips", default=1, type=int)
 
     return parser
 

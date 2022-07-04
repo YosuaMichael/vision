@@ -10,4 +10,7 @@ class CustomKinetics(torchvision.datasets.Kinetics):
         if self.transform is not None:
             video = self.transform(video)
 
-        return video, video_idx, idx, audio, label
+        start_pts = info["start_pts"]
+        end_pts = info["end_pts"]
+
+        return video, video_idx, idx, start_pts, end_pts, label
