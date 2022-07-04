@@ -156,7 +156,7 @@ def _get_cache_path(filepath):
 
 def collate_fn(batch):
     # remove audio from the batch
-    # batch = [(d[0], d[2]) for d in batch]
+    batch = [(d[0], d[1], d[2], d[4]) for d in batch]
     return default_collate(batch)
 
 
@@ -243,7 +243,7 @@ def main(args):
                 "mp4",
             ),
             output_format="TCHW",
-            num_workers=10,
+            num_workers=15,
         )
         if args.cache_dataset:
             print(f"Saving dataset_test to {cache_path}")

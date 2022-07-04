@@ -271,6 +271,9 @@ def all_gather(tensors):
         tensors (list): tensors to perform all gather across all processes in
         all machines.
     """
+    if not is_dist_avail_and_initialized():
+        # nothing to sync, but we still convert to tensor for consistency with the distributed case.
+        return tensors
 
     gather_list = []
     output_tensor = []

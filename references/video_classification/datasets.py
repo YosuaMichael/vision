@@ -1,4 +1,6 @@
 import torchvision
+from typing import Tuple
+from torch import Tensor
 
 
 class CustomKinetics(torchvision.datasets.Kinetics):
