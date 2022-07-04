@@ -4,6 +4,7 @@ import time
 import warnings
 
 import presets
+import datasets
 import torch
 import torch.utils.data
 import torchvision
@@ -52,12 +53,23 @@ def evaluate(model, criterion, data_loader, device):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Test:"
     num_processed_samples = 0
+    # Build aggregated outputs and targets
+    num_videos = len(data_loader.dataset.samples)
+    num_classes = len(data_loader.dataset.classes)
+    agg_outputs = torch.zeros((num_videos, num_classes), dtype=torch.float32, device=device)
+    agg_targets = torch.zeros((num_videos), dtype=torch.int32, device=device)
     with torch.inference_mode():
-        for video, target in metric_logger.log_every(data_loader, 100, header):
+        for video, video_idx, target in metric_logger.log_every(data_loader, 100, header):
             video = video.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
             output = model(video)
             loss = criterion(output, target)
+           
+            # Iterate over batch to correctly aggregate according to video_idx
+            for b in range(video.size(0)):
+                idx = video_idx[b].item()
+                agg_outputs[idx] += output[b].detach()
+                agg_targets[idx] = target[b].detach().item()
 
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
             # FIXME need to take into account that the datasets
@@ -95,6 +107,15 @@ def evaluate(model, criterion, data_loader, device):
             top1=metric_logger.acc1, top5=metric_logger.acc5
         )
     )
+    # Patch to get similar video level ensemble result as SlowFast
+    agg_outputs = utils.reduce_across_processes(agg_outputs)
+    agg_targets = utils.reduce_across_processes(agg_targets, op=torch.distributed.ReduceOp.MAX)
+    agg_acc1, agg_acc5 = utils.accuracy(agg_outputs, agg_targets, topk=(1, 5))
+    print(
+        " * Video Acc@1 {acc1:.3f} Video Acc@5 {acc5:.3f}".format(
+            acc1=agg_acc1, acc5=agg_acc5
+        )
+    )
     return metric_logger.acc1.global_avg
 
 
@@ -109,7 +130,7 @@ def _get_cache_path(filepath):
 
 def collate_fn(batch):
     # remove audio from the batch
-    batch = [(d[0], d[2]) for d in batch]
+    # batch = [(d[0], d[2]) for d in batch]
     return default_collate(batch)
 
 
@@ -134,6 +155,7 @@ def main(args):
     valdir = os.path.join(args.data_path, "val")
 
     print("Loading training data")
+    """
     st = time.time()
     cache_path = _get_cache_path(traindir)
     transform_train = presets.VideoClassificationPresetTrain(crop_size=(112, 112), resize_size=(128, 171))
@@ -145,7 +167,7 @@ def main(args):
     else:
         if args.distributed:
             print("It is recommended to pre-compute the dataset cache on a single-gpu first, as it will be faster")
-        dataset = torchvision.datasets.Kinetics(
+        dataset = datasets.CustomKinetics(
             args.data_path,
             frames_per_clip=args.clip_len,
             num_classes=args.kinetics_version,
@@ -165,7 +187,7 @@ def main(args):
             utils.save_on_master((dataset, traindir), cache_path)
 
     print("Took", time.time() - st)
-
+    """
     print("Loading validation data")
     cache_path = _get_cache_path(valdir)
 
@@ -182,7 +204,7 @@ def main(args):
     else:
         if args.distributed:
             print("It is recommended to pre-compute the dataset cache on a single-gpu first, as it will be faster")
-        dataset_test = torchvision.datasets.Kinetics(
+        dataset_test = datasets.CustomKinetics(
             args.data_path,
             frames_per_clip=args.clip_len,
             num_classes=args.kinetics_version,
@@ -195,6 +217,7 @@ def main(args):
                 "mp4",
             ),
             output_format="TCHW",
+            num_workers=10,
         )
         if args.cache_dataset:
             print(f"Saving dataset_test to {cache_path}")
@@ -202,20 +225,20 @@ def main(args):
             utils.save_on_master((dataset_test, valdir), cache_path)
 
     print("Creating data loaders")
-    train_sampler = RandomClipSampler(dataset.video_clips, args.clips_per_video)
+    #train_sampler = RandomClipSampler(dataset.video_clips, args.clips_per_video)
     test_sampler = UniformClipSampler(dataset_test.video_clips, args.clips_per_video)
     if args.distributed:
-        train_sampler = DistributedSampler(train_sampler)
+        #train_sampler = DistributedSampler(train_sampler)
         test_sampler = DistributedSampler(test_sampler, shuffle=False)
 
-    data_loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        sampler=train_sampler,
-        num_workers=args.workers,
-        pin_memory=True,
-        collate_fn=collate_fn,
-    )
+    #data_loader = torch.utils.data.DataLoader(
+    #    dataset,
+    #    batch_size=args.batch_size,
+    #    sampler=train_sampler,
+    #    num_workers=args.workers,
+    #    pin_memory=True,
+    #    collate_fn=collate_fn,
+    #)
 
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test,
@@ -240,6 +263,7 @@ def main(args):
 
     # convert scheduler to be per iteration, not per epoch, for warmup that lasts
     # between different epochs
+    """
     iters_per_epoch = len(data_loader)
     lr_milestones = [iters_per_epoch * (m - args.lr_warmup_epochs) for m in args.lr_milestones]
     main_lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=lr_milestones, gamma=args.lr_gamma)
@@ -265,7 +289,7 @@ def main(args):
         )
     else:
         lr_scheduler = main_lr_scheduler
-
+    """
     model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
@@ -312,10 +336,10 @@ def main(args):
     print(f"Training time {total_time_str}")
 
 
-def parse_args():
+def get_args_parser(add_help=True):
     import argparse
 
-    parser = argparse.ArgumentParser(description="PyTorch Video Classification Training")
+    parser = argparse.ArgumentParser(description="PyTorch Video Classification Training", add_help=add_help)
 
     parser.add_argument("--data-path", default="/datasets01_101/kinetics/070618/", type=str, help="dataset path")
     parser.add_argument(
@@ -386,11 +410,8 @@ def parse_args():
     # Mixed precision training parameters
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
 
-    args = parser.parse_args()
-
-    return args
-
+    return parser
 
 if __name__ == "__main__":
-    args = parse_args()
+    args = get_args_parser().parse_args()
     main(args)
