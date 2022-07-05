@@ -59,7 +59,7 @@ def evaluate(model, criterion, data_loader, device, args):
     num_classes = len(data_loader.dataset.classes)
     agg_outputs = torch.zeros((num_videos, num_classes), dtype=torch.float32, device=device)
     agg_targets = torch.zeros((num_videos), dtype=torch.int32, device=device)
-    tsv_out = open(os.path.join(args.output_dir, f"{args.model}_val.jsonl"), "w")
+    tsv_out = open(os.path.join(args.output_dir, f"{args.model}_val_step{args.step_between_clips}.jsonl"), "w")
     with torch.inference_mode():
         for video, video_idx, clip_idx, start_pts, end_pts, target in metric_logger.log_every(data_loader, 100, header):
             video = video.to(device, non_blocking=True)
@@ -150,7 +150,7 @@ def evaluate(model, criterion, data_loader, device, args):
     return metric_logger.acc1.global_avg
 
 
-def _get_cache_path(filepath):
+def _get_cache_path(filepath, args):
     import hashlib
     
     value = f"{filepath}-{args.clip_len}-{args.kinetics_version}-{args.frame_rate}-{args.step_between_clips}"
@@ -189,7 +189,7 @@ def main(args):
     print("Loading training data")
     """
     st = time.time()
-    cache_path = _get_cache_path(traindir)
+    cache_path = _get_cache_path(traindir, args)
     transform_train = presets.VideoClassificationPresetTrain(crop_size=(112, 112), resize_size=(128, 171))
 
     if args.cache_dataset and os.path.exists(cache_path):
@@ -221,7 +221,7 @@ def main(args):
     print("Took", time.time() - st)
     """
     print("Loading validation data")
-    cache_path = _get_cache_path(valdir)
+    cache_path = _get_cache_path(valdir, args)
 
     if args.weights and args.test_only:
         weights = torchvision.models.get_weight(args.weights)
