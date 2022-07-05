@@ -69,9 +69,10 @@ def evaluate(model, criterion, data_loader, device, args):
             
            
             # Iterate over batch to correctly aggregate according to video_idx
+            soft_output = nn.Softmax(dim=1)(output)
             for b in range(video.size(0)):
                 idx = video_idx[b].item()
-                agg_outputs[idx] += output[b].detach()
+                agg_outputs[idx] += soft_output[b].detach()
                 agg_targets[idx] = target[b].detach().item()
 
 
