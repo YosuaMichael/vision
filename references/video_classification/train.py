@@ -14,6 +14,7 @@ import utils
 from torch import nn
 from torch.utils.data.dataloader import default_collate
 from torchvision.datasets.samplers import DistributedSampler, RandomClipSampler, UniformClipSampler
+import torchmultimodal.models.omnivore as omnivore
 
 
 def train_one_epoch(model, criterion, optimizer, lr_scheduler, data_loader, device, epoch, print_freq, scaler=None):
@@ -63,7 +64,8 @@ def evaluate(model, criterion, data_loader, device):
         for video, video_idx, target in metric_logger.log_every(data_loader, 100, header):
             video = video.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
-            output = model(video)
+            # Adding input_type for omnivore
+            output = model(video, "video")
             loss = criterion(output, target)
 
             # Use softmax to convert output into prediction probability
@@ -190,12 +192,9 @@ def main(args):
 
     print("Loading validation data")
     cache_path = _get_cache_path(valdir, args)
-
-    if args.weights and args.test_only:
-        weights = torchvision.models.get_weight(args.weights)
-        transform_test = weights.transforms()
-    else:
-        transform_test = presets.VideoClassificationPresetEval(crop_size=(112, 112), resize_size=(128, 171))
+    
+    # Hardcode for omnivore
+    transform_test = presets.VideoClassificationPresetEval(crop_size=224, resize_size=224)
 
     if args.cache_dataset and os.path.exists(cache_path):
         print(f"Loading dataset_test from {cache_path}")
@@ -252,7 +251,8 @@ def main(args):
     )
 
     print("Creating model")
-    model = torchvision.models.video.__dict__[args.model](weights=args.weights)
+    # Hardcode for omnivore
+    model = omnivore.omnivore_swin_t(pretrained=True)
     model.to(device)
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
