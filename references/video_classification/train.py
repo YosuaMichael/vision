@@ -2,8 +2,10 @@ import datetime
 import os
 import time
 import warnings
+import json
 
 import presets
+import datasets
 import torch
 import torch.utils.data
 import torchvision
@@ -47,17 +49,34 @@ def train_one_epoch(model, criterion, optimizer, lr_scheduler, data_loader, devi
         lr_scheduler.step()
 
 
-def evaluate(model, criterion, data_loader, device):
+def evaluate(model, criterion, data_loader, device, args):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Test:"
     num_processed_samples = 0
+    # Build aggregated outputs and targets
+    num_videos = len(data_loader.dataset.samples)
+    num_classes = len(data_loader.dataset.classes)
+    agg_outputs = torch.zeros((num_videos, num_classes), dtype=torch.float32, device=device)
+    agg_targets = torch.zeros((num_videos), dtype=torch.int32, device=device)
+    tsv_out = open(os.path.join(args.output_dir, f"{args.model}_val_step{args.step_between_clips}.jsonl"), "w")
     with torch.inference_mode():
-        for video, target in metric_logger.log_every(data_loader, 100, header):
+        for video, video_idx, clip_idx, start_pts, end_pts, target in metric_logger.log_every(data_loader, 100, header):
             video = video.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
             output = model(video)
             loss = criterion(output, target)
+            
+           
+            # Iterate over batch to correctly aggregate according to video_idx
+            soft_output = nn.Softmax(dim=1)(output)
+            for b in range(video.size(0)):
+                idx = video_idx[b].item()
+                agg_outputs[idx] += soft_output[b].detach()
+                agg_targets[idx] = target[b].detach().item()
+
+
+
 
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
             # FIXME need to take into account that the datasets
@@ -67,6 +86,31 @@ def evaluate(model, criterion, data_loader, device):
             metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
             metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
             num_processed_samples += batch_size
+
+            # Gather from all gpus and write the output
+            video_idx = video_idx.to(device, non_blocking=True)
+            clip_idx = clip_idx.to(device, non_blocking=True)
+            output = output.to(device, non_blocking=True)
+            start_pts = start_pts.to(device, non_blocking=True)
+            end_pts = end_pts.to(device, non_blocking=True)
+            dvideo_idx, dclip_idx, doutput, dtarget, dstart_pts, dend_pts = utils.all_gather([video_idx, clip_idx, output, target, start_pts, end_pts])
+            for b in range(dvideo_idx.size(0)):
+                idx = dvideo_idx[b].item()
+                cur_clip_idx = dclip_idx[b].item()
+                video_path = data_loader.dataset.video_clips.video_paths[idx]
+                pred5 = doutput[b].topk(5)[1].tolist()
+                true_label = dtarget[b].detach().item()
+                raw_output = doutput[b].tolist()
+                cur_start_pts = dstart_pts[b].item()
+                cur_end_pts = dend_pts[b].item()
+                data = {
+                    "video_id": idx, "clip_id": cur_clip_idx, "video_path": video_path,
+                    "label": true_label, "top5_pred": pred5, "raw_output": raw_output,
+                    "start_pts": cur_start_pts, "end_pts": cur_end_pts,
+                }
+                tsv_out.write(json.dumps(data) + "\n")
+                tsv_out.flush()
+    tsv_out.close()
     # gather the stats from all processes
     num_processed_samples = utils.reduce_across_processes(num_processed_samples)
     if isinstance(data_loader.sampler, DistributedSampler):
@@ -95,21 +139,31 @@ def evaluate(model, criterion, data_loader, device):
             top1=metric_logger.acc1, top5=metric_logger.acc5
         )
     )
+    # Patch to get similar video level ensemble result as SlowFast
+    agg_outputs = utils.reduce_across_processes(agg_outputs)
+    agg_targets = utils.reduce_across_processes(agg_targets, op=torch.distributed.ReduceOp.MAX)
+    agg_acc1, agg_acc5 = utils.accuracy(agg_outputs, agg_targets, topk=(1, 5))
+    print(
+        " * Video Acc@1 {acc1:.3f} Video Acc@5 {acc5:.3f}".format(
+            acc1=agg_acc1, acc5=agg_acc5
+        )
+    )
     return metric_logger.acc1.global_avg
 
 
-def _get_cache_path(filepath):
+def _get_cache_path(filepath, args):
     import hashlib
-
-    h = hashlib.sha1(filepath.encode()).hexdigest()
-    cache_path = os.path.join("~", ".torch", "vision", "datasets", "kinetics", h[:10] + ".pt")
+    
+    value = f"{filepath}-{args.clip_len}-{args.kinetics_version}-{args.frame_rate}-{args.step_between_clips}"
+    h = hashlib.sha1(value.encode()).hexdigest()
+    cache_path = os.path.join("~", ".torch", "vision", "datasets", "kinetics_withtime", h[:10] + ".pt")
     cache_path = os.path.expanduser(cache_path)
     return cache_path
 
 
 def collate_fn(batch):
     # remove audio from the batch
-    batch = [(d[0], d[2]) for d in batch]
+    # batch = [(d[0], d[1], d[2], d[4]) for d in batch]
     return default_collate(batch)
 
 
@@ -134,8 +188,9 @@ def main(args):
     valdir = os.path.join(args.data_path, "val")
 
     print("Loading training data")
+    """
     st = time.time()
-    cache_path = _get_cache_path(traindir)
+    cache_path = _get_cache_path(traindir, args)
     transform_train = presets.VideoClassificationPresetTrain(crop_size=(112, 112), resize_size=(128, 171))
 
     if args.cache_dataset and os.path.exists(cache_path):
@@ -145,12 +200,12 @@ def main(args):
     else:
         if args.distributed:
             print("It is recommended to pre-compute the dataset cache on a single-gpu first, as it will be faster")
-        dataset = torchvision.datasets.Kinetics(
+        dataset = datasets.CustomKinetics(
             args.data_path,
             frames_per_clip=args.clip_len,
             num_classes=args.kinetics_version,
             split="train",
-            step_between_clips=1,
+            step_between_clips=args.step_between_clips,
             transform=transform_train,
             frame_rate=args.frame_rate,
             extensions=(
@@ -165,9 +220,9 @@ def main(args):
             utils.save_on_master((dataset, traindir), cache_path)
 
     print("Took", time.time() - st)
-
+    """
     print("Loading validation data")
-    cache_path = _get_cache_path(valdir)
+    cache_path = _get_cache_path(valdir, args)
 
     if args.weights and args.test_only:
         weights = torchvision.models.get_weight(args.weights)
@@ -182,12 +237,12 @@ def main(args):
     else:
         if args.distributed:
             print("It is recommended to pre-compute the dataset cache on a single-gpu first, as it will be faster")
-        dataset_test = torchvision.datasets.Kinetics(
+        dataset_test = datasets.CustomKinetics(
             args.data_path,
             frames_per_clip=args.clip_len,
             num_classes=args.kinetics_version,
             split="val",
-            step_between_clips=1,
+            step_between_clips=args.step_between_clips,
             transform=transform_test,
             frame_rate=args.frame_rate,
             extensions=(
@@ -195,6 +250,7 @@ def main(args):
                 "mp4",
             ),
             output_format="TCHW",
+            num_workers=15,
         )
         if args.cache_dataset:
             print(f"Saving dataset_test to {cache_path}")
@@ -202,20 +258,20 @@ def main(args):
             utils.save_on_master((dataset_test, valdir), cache_path)
 
     print("Creating data loaders")
-    train_sampler = RandomClipSampler(dataset.video_clips, args.clips_per_video)
+    #train_sampler = RandomClipSampler(dataset.video_clips, args.clips_per_video)
     test_sampler = UniformClipSampler(dataset_test.video_clips, args.clips_per_video)
     if args.distributed:
-        train_sampler = DistributedSampler(train_sampler)
+        #train_sampler = DistributedSampler(train_sampler)
         test_sampler = DistributedSampler(test_sampler, shuffle=False)
 
-    data_loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        sampler=train_sampler,
-        num_workers=args.workers,
-        pin_memory=True,
-        collate_fn=collate_fn,
-    )
+    #data_loader = torch.utils.data.DataLoader(
+    #    dataset,
+    #    batch_size=args.batch_size,
+    #    sampler=train_sampler,
+    #    num_workers=args.workers,
+    #    pin_memory=True,
+    #    collate_fn=collate_fn,
+    #)
 
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test,
@@ -240,6 +296,7 @@ def main(args):
 
     # convert scheduler to be per iteration, not per epoch, for warmup that lasts
     # between different epochs
+    """
     iters_per_epoch = len(data_loader)
     lr_milestones = [iters_per_epoch * (m - args.lr_warmup_epochs) for m in args.lr_milestones]
     main_lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=lr_milestones, gamma=args.lr_gamma)
@@ -265,7 +322,7 @@ def main(args):
         )
     else:
         lr_scheduler = main_lr_scheduler
-
+    """
     model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
@@ -284,7 +341,7 @@ def main(args):
         # We disable the cudnn benchmarking because it can noticeably affect the accuracy
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
-        evaluate(model, criterion, data_loader_test, device=device)
+        evaluate(model, criterion, data_loader_test, device=device, args=args)
         return
 
     print("Start training")
@@ -293,7 +350,7 @@ def main(args):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         train_one_epoch(model, criterion, optimizer, lr_scheduler, data_loader, device, epoch, args.print_freq, scaler)
-        evaluate(model, criterion, data_loader_test, device=device)
+        evaluate(model, criterion, data_loader_test, device=device, args=args)
         if args.output_dir:
             checkpoint = {
                 "model": model_without_ddp.state_dict(),
@@ -312,10 +369,10 @@ def main(args):
     print(f"Training time {total_time_str}")
 
 
-def parse_args():
+def get_args_parser(add_help=True):
     import argparse
 
-    parser = argparse.ArgumentParser(description="PyTorch Video Classification Training")
+    parser = argparse.ArgumentParser(description="PyTorch Video Classification Training", add_help=add_help)
 
     parser.add_argument("--data-path", default="/datasets01_101/kinetics/070618/", type=str, help="dataset path")
     parser.add_argument(
@@ -324,7 +381,7 @@ def parse_args():
     parser.add_argument("--model", default="r2plus1d_18", type=str, help="model name")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument("--clip-len", default=16, type=int, metavar="N", help="number of frames per clip")
-    parser.add_argument("--frame-rate", default=15, type=int, metavar="N", help="the frame rate")
+    parser.add_argument("--frame-rate", default=15, type=int, help="the frame rate")
     parser.add_argument(
         "--clips-per-video", default=5, type=int, metavar="N", help="maximum number of clips per video to consider"
     )
@@ -386,11 +443,10 @@ def parse_args():
     # Mixed precision training parameters
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
 
-    args = parser.parse_args()
+    parser.add_argument("--step-between-clips", default=1, type=int)
 
-    return args
-
+    return parser
 
 if __name__ == "__main__":
-    args = parse_args()
+    args = get_args_parser().parse_args()
     main(args)

@@ -330,6 +330,8 @@ class VideoClips:
             start_pts = clip_pts[0].item()
             end_pts = clip_pts[-1].item()
             video, audio, info = read_video(video_path, start_pts, end_pts)
+            video_start_pts = start_pts
+            video_end_pts = end_pts
         else:
             _info = _probe_video_from_file(video_path)
             video_fps = _info.video_fps
@@ -364,6 +366,7 @@ class VideoClips:
             if audio_fps is not None:
                 info["audio_fps"] = audio_fps
 
+
         if self.frame_rate is not None:
             resampling_idx = self.resampling_idxs[video_idx][clip_idx]
             if isinstance(resampling_idx, torch.Tensor):
@@ -375,6 +378,10 @@ class VideoClips:
         if self.output_format == "TCHW":
             # [T,H,W,C] --> [T,C,H,W]
             video = video.permute(0, 3, 1, 2)
+
+        # Adding more video info
+        info["start_pts"] = video_start_pts
+        info["end_pts"] = video_end_pts
 
         return video, audio, info, video_idx
 
