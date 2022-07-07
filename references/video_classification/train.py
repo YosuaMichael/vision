@@ -153,6 +153,7 @@ def main(args):
     valdir = os.path.join(args.data_path, "val")
 
     print("Loading training data")
+    """
     st = time.time()
     cache_path = _get_cache_path(traindir, args)
     transform_train = presets.VideoClassificationPresetTrain(crop_size=(112, 112), resize_size=(128, 171))
@@ -184,6 +185,7 @@ def main(args):
             utils.save_on_master((dataset, traindir), cache_path)
 
     print("Took", time.time() - st)
+    """
 
     print("Loading validation data")
     cache_path = _get_cache_path(valdir, args)
@@ -214,6 +216,7 @@ def main(args):
                 "mp4",
             ),
             output_format="TCHW",
+            num_workers=args.workers,
         )
         if args.cache_dataset:
             print(f"Saving dataset_test to {cache_path}")
@@ -221,12 +224,13 @@ def main(args):
             utils.save_on_master((dataset_test, valdir), cache_path)
 
     print("Creating data loaders")
-    train_sampler = RandomClipSampler(dataset.video_clips, args.clips_per_video)
+    # train_sampler = RandomClipSampler(dataset.video_clips, args.clips_per_video)
     test_sampler = UniformClipSampler(dataset_test.video_clips, args.clips_per_video)
     if args.distributed:
-        train_sampler = DistributedSampler(train_sampler)
+        # train_sampler = DistributedSampler(train_sampler)
         test_sampler = DistributedSampler(test_sampler, shuffle=False)
 
+    """
     data_loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -235,6 +239,7 @@ def main(args):
         pin_memory=True,
         collate_fn=collate_fn,
     )
+    """
 
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test,
@@ -259,6 +264,7 @@ def main(args):
 
     # convert scheduler to be per iteration, not per epoch, for warmup that lasts
     # between different epochs
+    """
     iters_per_epoch = len(data_loader)
     lr_milestones = [iters_per_epoch * (m - args.lr_warmup_epochs) for m in args.lr_milestones]
     main_lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=lr_milestones, gamma=args.lr_gamma)
@@ -284,7 +290,8 @@ def main(args):
         )
     else:
         lr_scheduler = main_lr_scheduler
-
+    
+    """
     model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
