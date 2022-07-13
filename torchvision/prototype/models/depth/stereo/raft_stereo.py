@@ -5,11 +5,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models.optical_flow.raft as raft
 from torch import Tensor
-from torchvision.models._api import WeightsEnum
+from torchvision.models._api import WeightsEnum, Weights
 from torchvision.models.optical_flow._utils import make_coords_grid, grid_sample, upsample_flow
 from torchvision.models.optical_flow.raft import ResidualBlock, MotionEncoder, FlowHead
 from torchvision.ops import Conv2dNormActivation
 from torchvision.utils import _log_api_usage_once
+
+# TODO: Replace with correct transforms!
+from torchvision.transforms._presets import OpticalFlow
 
 
 __all__ = (
@@ -610,11 +613,32 @@ def _raft_stereo(
 
 
 class Raft_Stereo_Realtime_Weights(WeightsEnum):
-    pass
+    SCENEFLOW_V1 = Weights(
+        # Weights ported from https://github.com/princeton-vl/RAFT-Stereo
+        url="https://download.pytorch.org/models/raft_realtime-a2f4374c.pth",
+        # TODO: Replace with correct transforms!
+        transforms=OpticalFlow,
+        meta={
+            "num_params": 8077152,
+            "recipe": "https://github.com/princeton-vl/RAFT-Stereo",
+        },
+    )
 
+    DEFAULT = SCENEFLOW_V1
 
 class Raft_Stereo_Base_Weights(WeightsEnum):
-    pass
+    SCENEFLOW_V1 = Weights(
+        # Weights ported from https://github.com/princeton-vl/RAFT-Stereo
+        url="https://download.pytorch.org/models/raft_base-0f269899.pth",
+        # TODO: Replace with correct transforms!
+        transforms=OpticalFlow,
+        meta={
+            "num_params": 11116176,
+            "recipe": "https://github.com/princeton-vl/RAFT-Stereo",
+        },
+    )
+
+    DEFAULT = SCENEFLOW_V1
 
 
 def raft_stereo_realtime(
