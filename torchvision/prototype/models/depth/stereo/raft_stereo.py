@@ -612,10 +612,50 @@ def _raft_stereo(
     return model
 
 
+class Raft_Stereo_Base_Weights(WeightsEnum):
+    SCENEFLOW_V1 = Weights(
+        # Ported weight based on raftstereo-sceneflow.pth from
+        # https://github.com/princeton-vl/RAFT-Stereo
+        url="https://download.pytorch.org/models/raftstereo_base_sceneflow-4b13ea14.pth",
+        # TODO: Replace with correct transforms!
+        transforms=OpticalFlow,
+        meta={
+            "num_params": 11116176,
+            "recipe": "https://github.com/princeton-vl/RAFT-Stereo",
+        },
+    )
+
+    MIDDLEBURY_V1 = Weights(
+        # Ported weight based on raftstereo-middlebury.pth from
+        # https://github.com/princeton-vl/RAFT-Stereo
+        url="https://download.pytorch.org/models/raftstereo_base_middlebury-0f269899.pth",
+        # TODO: Replace with correct transforms!
+        transforms=OpticalFlow,
+        meta={
+            "num_params": 11116176,
+            "recipe": "https://github.com/princeton-vl/RAFT-Stereo",
+        },
+    )
+
+    ETH3D_V1 = Weights(
+        # Ported weight based on raftstereo-eth3d.pth from
+        # https://github.com/princeton-vl/RAFT-Stereo
+        url="https://download.pytorch.org/models/raftstereo_base_eth3d-12f97c15.pth",
+        # TODO: Replace with correct transforms!
+        transforms=OpticalFlow,
+        meta={
+            "num_params": 11116176,
+            "recipe": "https://github.com/princeton-vl/RAFT-Stereo",
+        },
+    )
+
+    DEFAULT = SCENEFLOW_V1
+
 class Raft_Stereo_Realtime_Weights(WeightsEnum):
     SCENEFLOW_V1 = Weights(
-        # Weights ported from https://github.com/princeton-vl/RAFT-Stereo
-        url="https://download.pytorch.org/models/raft_realtime-a2f4374c.pth",
+        # Weights ported based on raftstereo-realtime.pth from
+        # https://github.com/princeton-vl/RAFT-Stereo
+        url="https://download.pytorch.org/models/raftstereo_realtime-a2f4374c.pth",
         # TODO: Replace with correct transforms!
         transforms=OpticalFlow,
         meta={
@@ -626,19 +666,61 @@ class Raft_Stereo_Realtime_Weights(WeightsEnum):
 
     DEFAULT = SCENEFLOW_V1
 
-class Raft_Stereo_Base_Weights(WeightsEnum):
-    SCENEFLOW_V1 = Weights(
-        # Weights ported from https://github.com/princeton-vl/RAFT-Stereo
-        url="https://download.pytorch.org/models/raft_base-0f269899.pth",
-        # TODO: Replace with correct transforms!
-        transforms=OpticalFlow,
-        meta={
-            "num_params": 11116176,
-            "recipe": "https://github.com/princeton-vl/RAFT-Stereo",
-        },
-    )
 
-    DEFAULT = SCENEFLOW_V1
+def raft_stereo_base(*, weights: Optional[Raft_Stereo_Base_Weights] = None, progress=True, **kwargs) -> RaftStereo:
+    """RAFT-Stereo model from
+    `RAFT-Stereo: Multilevel Recurrent Field Transforms for Stereo Matching <https://arxiv.org/abs/2109.07547>`_.
+
+    Please see the example below for a tutorial on how to use this model.
+
+    Args:
+        weights(:class:`~torchvision.prototype.models.depth.stereo.Raft_Stereo_Base_Weights`, optional): The
+            pretrained weights to use. See
+            :class:`~torchvision.prototype.models.depth.stereo.Raft_Stereo_Base_Weights`
+            below for more details, and possible values. By default, no
+            pre-trained weights are used.
+        progress (bool): If True, displays a progress bar of the download to stderr. Default is True.
+        **kwargs: parameters passed to the ``torchvision.prototype.models.depth.stereo.raft_stereo.RaftStereo``
+            base class. Please refer to the `source code
+            <https://github.com/pytorch/vision/blob/main/torchvision/models/optical_flow/raft.py>`_
+            for more details about this class.
+
+    .. autoclass:: torchvision.prototype.models.depth.stereo.Raft_Stereo_Base_Weights
+        :members:
+    """
+
+    weights = Raft_Stereo_Base_Weights.verify(weights)
+
+    return _raft_stereo(
+        weights=weights,
+        progress=progress,
+        shared_encoder_weight=False,
+        # Feature encoder
+        feature_encoder_layers=(64, 64, 96, 128, 256),
+        feature_encoder_strides=(1, 1, 2, 2),
+        feature_encoder_block=ResidualBlock,
+        # Context encoder
+        context_encoder_layers=(64, 64, 96, 128, 256),
+        context_encoder_strides=(1, 1, 2, 2),
+        context_encoder_out_with_blocks=[True, True, False],
+        context_encoder_block=ResidualBlock,
+        # Correlation block
+        corr_num_levels=4,
+        corr_radius=4,
+        # Motion encoder
+        motion_encoder_corr_layers=(64, 64),
+        motion_encoder_flow_layers=(64, 64),
+        motion_encoder_out_channels=128,
+        # Update block
+        update_block_hidden_dims=[128, 128, 128],
+        # Flow head
+        flow_head_hidden_size=256,
+        # Mask predictor
+        mask_predictor_hidden_size=256,
+        use_mask_predictor=True,
+        slow_fast=False,
+        **kwargs,
+    )
 
 
 def raft_stereo_realtime(
@@ -696,61 +778,5 @@ def raft_stereo_realtime(
         mask_predictor_hidden_size=256,
         use_mask_predictor=True,
         slow_fast=True,
-        **kwargs,
-    )
-
-
-def raft_stereo_base(*, weights: Optional[Raft_Stereo_Base_Weights] = None, progress=True, **kwargs) -> RaftStereo:
-    """RAFT-Stereo model from
-    `RAFT-Stereo: Multilevel Recurrent Field Transforms for Stereo Matching <https://arxiv.org/abs/2109.07547>`_.
-
-    Please see the example below for a tutorial on how to use this model.
-
-    Args:
-        weights(:class:`~torchvision.prototype.models.depth.stereo.Raft_Stereo_Base_Weights`, optional): The
-            pretrained weights to use. See
-            :class:`~torchvision.prototype.models.depth.stereo.Raft_Stereo_Base_Weights`
-            below for more details, and possible values. By default, no
-            pre-trained weights are used.
-        progress (bool): If True, displays a progress bar of the download to stderr. Default is True.
-        **kwargs: parameters passed to the ``torchvision.prototype.models.depth.stereo.raft_stereo.RaftStereo``
-            base class. Please refer to the `source code
-            <https://github.com/pytorch/vision/blob/main/torchvision/models/optical_flow/raft.py>`_
-            for more details about this class.
-
-    .. autoclass:: torchvision.prototype.models.depth.stereo.Raft_Stereo_Base_Weights
-        :members:
-    """
-
-    weights = Raft_Stereo_Base_Weights.verify(weights)
-
-    return _raft_stereo(
-        weights=weights,
-        progress=progress,
-        shared_encoder_weight=False,
-        # Feature encoder
-        feature_encoder_layers=(64, 64, 96, 128, 256),
-        feature_encoder_strides=(1, 1, 2, 2),
-        feature_encoder_block=ResidualBlock,
-        # Context encoder
-        context_encoder_layers=(64, 64, 96, 128, 256),
-        context_encoder_strides=(1, 1, 2, 2),
-        context_encoder_out_with_blocks=[True, True, False],
-        context_encoder_block=ResidualBlock,
-        # Correlation block
-        corr_num_levels=4,
-        corr_radius=4,
-        # Motion encoder
-        motion_encoder_corr_layers=(64, 64),
-        motion_encoder_flow_layers=(64, 64),
-        motion_encoder_out_channels=128,
-        # Update block
-        update_block_hidden_dims=[128, 128, 128],
-        # Flow head
-        flow_head_hidden_size=256,
-        # Mask predictor
-        mask_predictor_hidden_size=256,
-        use_mask_predictor=True,
-        slow_fast=False,
         **kwargs,
     )
