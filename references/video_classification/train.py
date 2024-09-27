@@ -13,6 +13,7 @@ import utils
 from torch import nn
 from torch.utils.data.dataloader import default_collate
 from torchvision.datasets.samplers import DistributedSampler, RandomClipSampler, UniformClipSampler
+import torchmultimodal.models.omnivore as omnivore
 
 
 def train_one_epoch(model, criterion, optimizer, lr_scheduler, data_loader, device, epoch, print_freq, scaler=None):
@@ -62,7 +63,8 @@ def evaluate(model, criterion, data_loader, device):
         for video, target, video_idx in metric_logger.log_every(data_loader, 100, header):
             video = video.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
-            output = model(video)
+            # Adding input_type for omnivore
+            output = model(video, "video")
             loss = criterion(output, target)
 
             # Use softmax to convert output into prediction probability
@@ -153,6 +155,7 @@ def main(args):
     valdir = os.path.join(args.data_path, "val")
 
     print("Loading training data")
+    """
     st = time.time()
     cache_path = _get_cache_path(traindir, args)
     transform_train = presets.VideoClassificationPresetTrain(crop_size=(112, 112), resize_size=(128, 171))
@@ -184,15 +187,13 @@ def main(args):
             utils.save_on_master((dataset, traindir), cache_path)
 
     print("Took", time.time() - st)
+    """
 
     print("Loading validation data")
     cache_path = _get_cache_path(valdir, args)
-
-    if args.weights and args.test_only:
-        weights = torchvision.models.get_weight(args.weights)
-        transform_test = weights.transforms()
-    else:
-        transform_test = presets.VideoClassificationPresetEval(crop_size=(112, 112), resize_size=(128, 171))
+    
+    # Hardcode for omnivore
+    transform_test = presets.VideoClassificationPresetEval(crop_size=224, resize_size=224)
 
     if args.cache_dataset and os.path.exists(cache_path):
         print(f"Loading dataset_test from {cache_path}")
@@ -214,6 +215,7 @@ def main(args):
                 "mp4",
             ),
             output_format="TCHW",
+            num_workers=args.workers,
         )
         if args.cache_dataset:
             print(f"Saving dataset_test to {cache_path}")
@@ -221,12 +223,13 @@ def main(args):
             utils.save_on_master((dataset_test, valdir), cache_path)
 
     print("Creating data loaders")
-    train_sampler = RandomClipSampler(dataset.video_clips, args.clips_per_video)
+    # train_sampler = RandomClipSampler(dataset.video_clips, args.clips_per_video)
     test_sampler = UniformClipSampler(dataset_test.video_clips, args.clips_per_video)
     if args.distributed:
-        train_sampler = DistributedSampler(train_sampler)
+        # train_sampler = DistributedSampler(train_sampler)
         test_sampler = DistributedSampler(test_sampler, shuffle=False)
 
+    """
     data_loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -235,6 +238,7 @@ def main(args):
         pin_memory=True,
         collate_fn=collate_fn,
     )
+    """
 
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test,
@@ -246,7 +250,8 @@ def main(args):
     )
 
     print("Creating model")
-    model = torchvision.models.video.__dict__[args.model](weights=args.weights)
+    # Hardcode for omnivore
+    model = omnivore.omnivore_swin_t(pretrained=True)
     model.to(device)
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -259,6 +264,7 @@ def main(args):
 
     # convert scheduler to be per iteration, not per epoch, for warmup that lasts
     # between different epochs
+    """
     iters_per_epoch = len(data_loader)
     lr_milestones = [iters_per_epoch * (m - args.lr_warmup_epochs) for m in args.lr_milestones]
     main_lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=lr_milestones, gamma=args.lr_gamma)
@@ -284,7 +290,8 @@ def main(args):
         )
     else:
         lr_scheduler = main_lr_scheduler
-
+    
+    """
     model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
